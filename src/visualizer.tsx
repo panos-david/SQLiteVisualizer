@@ -268,19 +268,32 @@ export default function SQLiteVisualizer() {
       'IF', 'EXISTS', 'AUTOINCREMENT', 'INTEGER', 'TEXT', 'REAL', 'BLOB', 'NUMERIC'
     ];
     
-    // Escape HTML first
-    let highlighted = sql
+    // Store original string positions to protect them
+    const stringPlaceholders: string[] = [];
+    let tempSql = sql;
+    
+    // Extract and protect strings first (including empty strings '')
+    tempSql = tempSql.replace(/'([^'\\]*(\\.[^'\\]*)*)'/g, (match) => {
+      const placeholder = `__STRING_${stringPlaceholders.length}__`;
+      stringPlaceholders.push(match);
+      return placeholder;
+    });
+    
+    tempSql = tempSql.replace(/"([^"\\]*(\\.[^"\\]*)*)"/g, (match) => {
+      const placeholder = `__STRING_${stringPlaceholders.length}__`;
+      stringPlaceholders.push(match);
+      return placeholder;
+    });
+    
+    // Escape HTML
+    let highlighted = tempSql
       .replace(/&/g, '&amp;')
       .replace(/</g, '&lt;')
       .replace(/>/g, '&gt;');
     
-    // Highlight comments first (so they don't interfere with other highlighting)
+    // Highlight comments (so they don't interfere with other highlighting)
     highlighted = highlighted.replace(/(--.*$)/gm, '<span class="sql-comment">$1</span>');
     highlighted = highlighted.replace(/(\/\*[\s\S]*?\*\/)/g, '<span class="sql-comment">$1</span>');
-    
-    // Highlight strings
-    highlighted = highlighted.replace(/('([^'\\]|\\.)*')/g, '<span class="sql-string">$1</span>');
-    highlighted = highlighted.replace(/("([^"\\]|\\.)*")/g, '<span class="sql-string">$1</span>');
     
     // Highlight numbers
     highlighted = highlighted.replace(/\b(\d+)\b/g, '<span class="sql-number">$1</span>');
@@ -289,6 +302,16 @@ export default function SQLiteVisualizer() {
     keywords.forEach(keyword => {
       const regex = new RegExp(`\\b(${keyword})\\b`, 'gi');
       highlighted = highlighted.replace(regex, (match) => `<span class="sql-keyword">${match}</span>`);
+    });
+    
+    // Restore strings with highlighting
+    stringPlaceholders.forEach((str, idx) => {
+      const placeholder = `__STRING_${idx}__`;
+      const escapedStr = str
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+      highlighted = highlighted.replace(placeholder, `<span class="sql-string">${escapedStr}</span>`);
     });
     
     return highlighted;
