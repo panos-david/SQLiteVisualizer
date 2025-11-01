@@ -1,14 +1,12 @@
-import { useEffect, useMemo, useRef, useState, useCallback } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Select, SelectTrigger, SelectContent, SelectItem, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
-import { Download, Loader2, Play, Upload, Database as DbIcon, Network, Table as TableIcon, Key, Link2, Sparkles } from "lucide-react";
+import { Download, Loader2, Play, Upload, Database as DbIcon, Network, Table as TableIcon, Key, Link2 } from "lucide-react";
 import { DataGrid, GridColDef } from "@mui/x-data-grid";
-import { pipeline } from "@xenova/transformers";
 
 // --- Helper Types ---
 type Database = any;
@@ -56,16 +54,11 @@ export default function SQLiteVisualizer() {
   const [query, setQuery] = useState<string>("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name;");
   const [queryResult, setQueryResult] = useState<QueryExecResult[] | null>(null);
   const [queryError, setQueryError] = useState<string>("");
+  const [querySuccess, setQuerySuccess] = useState<string>("");
   const [tableData, setTableData] = useState<TableData | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const sqlFileInputRef = useRef<HTMLInputElement | null>(null);
   const [savedQueries, setSavedQueries] = useState<Array<{name: string, sql: string}>>([]);
-
-  // Prompt Querying state
-  const [nlQuery, setNlQuery] = useState<string>("");
-  const [generatedSQL, setGeneratedSQL] = useState<string>("");
-  const [isGenerating, setIsGenerating] = useState(false);
-  const [nlpModel, setNlpModel] = useState<any>(null);
 
   // Schema diagram state
   type TableSchema = {
@@ -114,19 +107,6 @@ export default function SQLiteVisualizer() {
         alert("Σφάλμα φόρτωσης SQL.js. Παρακαλώ ανανεώστε τη σελίδα.");
       }
       setLoading(false);
-    })();
-  }, []);
-
-  // Initialize NLP model for prompt querying
-  useEffect(() => {
-    (async () => {
-      try {
-        // Load DistilGPT2 model for text generation
-        const generator = await pipeline('text-generation', 'distilgpt2');
-        setNlpModel(generator);
-      } catch (error) {
-        console.error("Failed to load NLP model:", error);
-      }
     })();
   }, []);
 
@@ -214,13 +194,54 @@ export default function SQLiteVisualizer() {
   const runQuery = () => {
     if (!db) return;
     setQueryError("");
+    setQuerySuccess("");
     try {
       const res = db.exec(query);
       setQueryResult(res);
       refreshTables();
+      
+      // Generate success message based on query type
+      const upperQuery = query.trim().toUpperCase();
+      let successMsg = "";
+      
+      if (upperQuery.startsWith("SELECT")) {
+        const rowCount = res.reduce((sum, r) => sum + (r.values?.length || 0), 0);
+        successMsg = `✓ Query εκτελέστηκε επιτυχώς! Βρέθηκαν ${rowCount} ${rowCount === 1 ? 'εγγραφή' : 'εγγραφές'}.`;
+      } else if (upperQuery.startsWith("INSERT")) {
+        successMsg = "✓ Η εγγραφή προστέθηκε επιτυχώς!";
+      } else if (upperQuery.startsWith("UPDATE")) {
+        successMsg = "✓ Οι εγγραφές ενημερώθηκαν επιτυχώς!";
+      } else if (upperQuery.startsWith("DELETE")) {
+        successMsg = "✓ Οι εγγραφές διαγράφηκαν επιτυχώς!";
+      } else if (upperQuery.startsWith("CREATE TABLE")) {
+        const match = query.match(/CREATE TABLE\s+["']?(\w+)["']?/i);
+        const tableName = match ? match[1] : "πίνακας";
+        successMsg = `✓ Ο πίνακας "${tableName}" δημιουργήθηκε επιτυχώς!`;
+      } else if (upperQuery.startsWith("DROP TABLE")) {
+        const match = query.match(/DROP TABLE\s+["']?(\w+)["']?/i);
+        const tableName = match ? match[1] : "πίνακας";
+        successMsg = `✓ Ο πίνακας "${tableName}" διαγράφηκε επιτυχώς!`;
+      } else if (upperQuery.startsWith("ALTER TABLE")) {
+        if (upperQuery.includes("RENAME")) {
+          successMsg = "✓ Ο πίνακας μετονομάστηκε επιτυχώς!";
+        } else if (upperQuery.includes("ADD COLUMN")) {
+          const match = query.match(/ADD COLUMN\s+["']?(\w+)["']?/i);
+          const colName = match ? match[1] : "στήλη";
+          successMsg = `✓ Η στήλη "${colName}" προστέθηκε επιτυχώς!`;
+        } else {
+          successMsg = "✓ Ο πίνακας τροποποιήθηκε επιτυχώς!";
+        }
+      } else if (upperQuery.startsWith("CREATE INDEX")) {
+        successMsg = "✓ Το index δημιουργήθηκε επιτυχώς!";
+      } else {
+        successMsg = "✓ Το query εκτελέστηκε επιτυχώς!";
+      }
+      
+      setQuerySuccess(successMsg);
     } catch (e: any) {
       setQueryError(e.message || "Unknown SQL error");
       setQueryResult(null);
+      setQuerySuccess("");
     }
   };
 
@@ -341,74 +362,6 @@ export default function SQLiteVisualizer() {
     setSavedQueries([]);
   };
 
-  // Generate SQL from natural language prompt
-  const generateSQLFromPrompt = async () => {
-    if (!nlpModel || !nlQuery.trim()) return;
-    
-    setIsGenerating(true);
-    setGeneratedSQL("");
-    
-    try {
-      // Build context from table schemas
-      const schemaContext = schemas.map(s => 
-        `Table ${s.name}: ${s.columns.map(c => `${c.name} ${c.type}`).join(', ')}`
-      ).join('\n');
-      
-      // Create prompt for SQL generation
-      // NOTE: Future enhancement - integrate ChromaDB here to retrieve best practices
-      // and similar query examples from a vector database of SQL patterns
-      const prompt = `Given these database tables:
-${schemaContext}
-
-Generate a SQL query for: ${nlQuery}
-
-SQL:`;
-
-      // Generate SQL using DistilGPT2
-      const result = await nlpModel(prompt, {
-        max_new_tokens: 100,
-        temperature: 0.3,
-        do_sample: true,
-        top_k: 50
-      });
-      
-      // Extract SQL from generated text
-      let sql = result[0].generated_text.replace(prompt, '').trim();
-      
-      // Clean up the generated SQL
-      sql = sql.split('\n')[0]; // Take first line
-      sql = sql.replace(/[^\x20-\x7E]/g, ''); // Remove non-printable chars
-      
-      // Basic validation and cleanup
-      if (!sql.toUpperCase().match(/^(SELECT|INSERT|UPDATE|DELETE|CREATE|DROP|ALTER|PRAGMA)/)) {
-        sql = "SELECT " + sql;
-      }
-      
-      setGeneratedSQL(sql);
-    } catch (error) {
-      console.error("Failed to generate SQL:", error);
-      setGeneratedSQL("-- Error generating SQL. Please try rephrasing your query.");
-    } finally {
-      setIsGenerating(false);
-    }
-  };
-
-  const executeGeneratedSQL = () => {
-    if (generatedSQL) {
-      setQuery(generatedSQL);
-      setQueryError("");
-      if (!db) return;
-      try {
-        const res = db.exec(generatedSQL);
-        setQueryResult(res);
-        refreshTables();
-      } catch (e: any) {
-        setQueryError(e.message || "Unknown SQL error");
-        setQueryResult(null);
-      }
-    }
-  };
-
   const createNewDatabase = () => {
     if (!SQL) return;
     const confirmed = confirm("Δημιουργία νέας κενής βάσης δεδομένων; Η τρέχουσα βάση θα χαθεί αν δεν την έχετε αποθηκεύσει.");
@@ -493,7 +446,6 @@ SQL:`;
         <TabsList>
           <TabsTrigger value="tables"><TableIcon className="mr-2 h-4 w-4"/>Tables</TabsTrigger>
           <TabsTrigger value="sql"><Play className="mr-2 h-4 w-4"/>SQL</TabsTrigger>
-          <TabsTrigger value="prompt"><Sparkles className="mr-2 h-4 w-4"/>Prompt Querying</TabsTrigger>
           <TabsTrigger value="diagram"><Network className="mr-2 h-4 w-4"/>ER Diagram</TabsTrigger>
         </TabsList>
 
@@ -662,6 +614,12 @@ SQL:`;
                 </div>
               )}
 
+              {querySuccess && (
+                <div className="bg-green-50 border border-green-200 text-green-800 px-4 py-3 rounded relative">
+                  <strong className="font-bold">{querySuccess}</strong>
+                </div>
+              )}
+
               {queryResult && queryResult.length > 0 && (
                 <div className="space-y-4">
                   {queryResult.map((res, i) => (
@@ -772,137 +730,6 @@ SQL:`;
                   })}
                 </div>
               )}
-            </CardContent>
-          </Card>
-        </TabsContent>
-
-        <TabsContent value="prompt" className="space-y-3">
-          <Card>
-            <CardHeader>
-              <CardTitle>Prompt Querying - Natural Language to SQL</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
-                <h3 className="font-semibold text-sm mb-2 flex items-center gap-2">
-                  <Sparkles className="h-4 w-4 text-blue-600" />
-                  Πώς λειτουργεί
-                </h3>
-                <p className="text-sm text-gray-700 mb-2">
-                  Περιγράψτε με φυσική γλώσσα τι θέλετε να βρείτε στη βάση και το σύστημα θα δημιουργήσει αυτόματα το SQL query.
-                </p>
-                <p className="text-xs text-gray-600">
-                  <strong>Τεχνολογίες:</strong> DistilGPT2 για text generation, spaCy-js για NLP processing
-                </p>
-                <p className="text-xs text-gray-500 mt-1">
-                  <strong>Μελλοντική αναβάθμιση:</strong> Ενσωμάτωση ChromaDB vector database για best practices και παραδείγματα queries
-                </p>
-              </div>
-
-              <div>
-                <Label htmlFor="nlQuery">Περιγράψτε τι θέλετε να βρείτε:</Label>
-                <Textarea
-                  id="nlQuery"
-                  rows={4}
-                  value={nlQuery}
-                  onChange={(e) => setNlQuery(e.target.value)}
-                  placeholder="Παράδειγμα: Δείξε μου όλους τους πελάτες από την Αθήνα&#10;Παράδειγμα: Βρες τις 10 πιο ακριβές παραγγελίες&#10;Παράδειγμα: Μέτρησε πόσα προϊόντα έχω σε απόθεμα"
-                  className="font-sans"
-                  disabled={!nlpModel || isGenerating}
-                />
-              </div>
-
-              <div className="flex gap-2">
-                <Button 
-                  onClick={generateSQLFromPrompt} 
-                  disabled={!nlpModel || !nlQuery.trim() || isGenerating}
-                >
-                  {isGenerating ? (
-                    <>
-                      <Loader2 className="mr-2 h-4 w-4 animate-spin"/>
-                      Δημιουργία...
-                    </>
-                  ) : (
-                    <>
-                      <Sparkles className="mr-2 h-4 w-4"/>
-                      Δημιουργία SQL
-                    </>
-                  )}
-                </Button>
-                {!nlpModel && (
-                  <span className="text-sm text-orange-600 flex items-center">
-                    <Loader2 className="mr-2 h-4 w-4 animate-spin"/>
-                    Φόρτωση NLP μοντέλου...
-                  </span>
-                )}
-              </div>
-
-              {generatedSQL && (
-                <div className="space-y-2">
-                  <Label>Δημιουργημένο SQL Query:</Label>
-                  <div className="relative bg-gray-50 border rounded p-3">
-                    <pre className="font-mono text-sm text-blue-700 whitespace-pre-wrap break-words">
-                      {generatedSQL}
-                    </pre>
-                  </div>
-                  <div className="flex gap-2">
-                    <Button onClick={executeGeneratedSQL}>
-                      <Play className="mr-2 h-4 w-4"/>
-                      Εκτέλεση Query
-                    </Button>
-                    <Button 
-                      variant="outline" 
-                      onClick={() => {
-                        setQuery(generatedSQL);
-                        // Switch to SQL tab would require tab state management
-                      }}
-                    >
-                      Αντιγραφή στο SQL Editor
-                    </Button>
-                  </div>
-                </div>
-              )}
-
-              {queryError && (
-                <div className="bg-red-50 border border-red-200 text-red-800 px-4 py-3 rounded relative">
-                  <strong className="font-bold">SQL Error: </strong>
-                  <span className="block sm:inline">{queryError}</span>
-                </div>
-              )}
-
-              {queryResult && queryResult.length > 0 && (
-                <div className="space-y-4">
-                  <Label>Αποτελέσματα:</Label>
-                  {queryResult.map((res, i) => (
-                    <div key={i} className="border rounded p-2 overflow-auto bg-white">
-                      <div className="font-medium mb-2">Result {i + 1}</div>
-                      <table className="text-sm w-full">
-                        <thead>
-                          <tr>
-                            {res.columns.map((c: string) => (
-                              <th key={c} className="text-left p-1 border-b">{c}</th>
-                            ))}
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {res.values.map((row: any[], idx: number) => (
-                            <tr key={idx}>
-                              {row.map((val: any, vIdx: number) => (
-                                <td key={vIdx} className="p-1 border-b">{String(val)}</td>
-                              ))}
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  ))}
-                </div>
-              )}
-
-              <div className="bg-gray-50 border rounded p-3 text-xs text-gray-600">
-                <strong>Σημείωση:</strong> Το σύστημα χρησιμοποιεί AI για τη δημιουργία του SQL. 
-                Ελέγξτε πάντα το παραχθέν query πριν την εκτέλεση. Για πιο ακριβή αποτελέσματα, 
-                χρησιμοποιήστε ξεκάθαρες περιγραφές και αναφέρετε τα ονόματα των πινάκων.
-              </div>
             </CardContent>
           </Card>
         </TabsContent>
